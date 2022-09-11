@@ -1,0 +1,35 @@
+<configuration>
+	<appender name="Console"
+		class="ch.qos.logback.core.ConsoleAppender">
+		<layout class="ch.qos.logback.classic.PatternLayout">
+			<Pattern>
+				%black(%d{ISO8601}) %highlight(%-5level) [%blue(%t)]
+				%yellow(%C{1.}):
+				%msg%n%throwable;%n
+			</Pattern>
+		</layout>
+	</appender>
+	<appender name="FILE-API"
+		class="ch.qos.logback.core.rolling.RollingFileAppender">
+		<file>smartcommpostprocessing.log</file>
+		<encoder>
+			<pattern>%date [%level] - %message%n%xException</pattern>
+		</encoder>
+		<rollingPolicy
+			class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+			<fileNamePattern>smartcommpostprocessing_backup_%d{yyyy-MM-dd}.%i.log
+			</fileNamePattern>
+			<maxHistory>20</maxHistory>
+			<totalSizeCap>100GB</totalSizeCap>
+			<timeBasedFileNamingAndTriggeringPolicy
+				class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
+				<maxFileSize>100GB</maxFileSize>
+			</timeBasedFileNamingAndTriggeringPolicy>
+		</rollingPolicy>
+	</appender>
+
+	<root level="info">
+		<appender-ref ref="FILE-API" />
+		<appender-ref ref="Console" />
+	</root>
+</configuration>
