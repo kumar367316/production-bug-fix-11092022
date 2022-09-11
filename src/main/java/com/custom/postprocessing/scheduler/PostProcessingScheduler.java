@@ -196,6 +196,13 @@ public class PostProcessingScheduler {
 			archiveMap = moveFileToTargetDirectory(OUTPUT_DIRECTORY + PRINT_DIRECTORY, transitTargetDirectory,
 					container, currentDate, currentDateTime, archiveMap);
 
+			moveSourceToTargetDirectory(
+					OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/" + currentDate + "-" + PROCESS_DIRECTORY + "/"
+							+ currentDateTime + "-" + "archive" + "/",
+					OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/" + currentDate + "/" + currentDateTime + "-"
+							+ ARCHIVE_DIRECTORY,
+					false, currentDate+"folder");
+			
 			if (archiveMap.containsKey("nonarchive")) {
 				CloudBlobDirectory printDirectory = getDirectoryName(container, OUTPUT_DIRECTORY,
 						TRANSIT_DIRECTORY + "/" + currentDate() + "-" + PROCESS_DIRECTORY + "/" + currentDateTime
@@ -207,13 +214,7 @@ public class PostProcessingScheduler {
 			if (archiveMap.size() == 0) {
 				statusMessage = "no file for postprocessing";
 			}
-
-			moveSourceToTargetDirectory(
-					OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/" + currentDate + "-" + PROCESS_DIRECTORY + "/"
-							+ currentDateTime + "-" + "archive" + "/",
-					OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/" + currentDate + "/" + currentDateTime + "-"
-							+ ARCHIVE_DIRECTORY,
-					false, "back-up");
+			//deleteFiles(fileList);
 
 			File prcoessComplete = processCompleteFile();
 			copyFileToTargetDirectory(prcoessComplete.toString(), OUTPUT_DIRECTORY + TRANSIT_DIRECTORY, currentDate);
@@ -248,11 +249,9 @@ public class PostProcessingScheduler {
 			String destFolder) {
 		BlobContainerClient blobContainerClient = getBlobContainerClient(connectionNameKey, containerName);
 		Iterable<BlobItem> listBlobs = blobContainerClient.listBlobsByHierarchy(sourceDirectory);
-		int count = 0;
 		for (BlobItem blobItem : listBlobs) {
 			String fileName = getFileName(blobItem.getName());
 			fileName = findActualFileName(fileName);
-			logger.info("transfer file to:" + destFolder + " " + fileName);
 			BlobClient dstBlobClient = blobContainerClient.getBlobClient(targetDirectory + fileName);
 			BlobClient srcBlobClient = blobContainerClient.getBlobClient(blobItem.getName());
 			String updateSrcUrl = srcBlobClient.getBlobUrl();
@@ -260,29 +259,27 @@ public class PostProcessingScheduler {
 				updateSrcUrl = srcBlobClient.getBlobUrl().replace(BACKSLASH_ASCII, FILE_SEPARATION);
 			}
 			dstBlobClient.beginCopy(updateSrcUrl, null);
-			count++;
-			logger.info("file count for processing:" + count);
 			if (deleteFile) {
 				srcBlobClient.delete();
 			}
 		}
-		logger.info("total number of files are upload:" + count);
 	}
 
 	private Map<String, String> moveFileToTargetDirectory(String sourceDirectory, String targetDirectory,
 			CloudBlobContainer container, String currentDate, String currentDateTime, Map<String, String> archiveMap) {
-		Map<String, String> ccRecipeintTypeMap = new ConcurrentHashMap<String, String>();
+		Map<String, String> ccRecipientTypeMap = new ConcurrentHashMap<String, String>();
 		List<String> ccRecipeintFileTypeLIst = new LinkedList<String>();
+		ConcurrentHashMap<String, String> invalidCheckMap = new ConcurrentHashMap<>();
 		try {
 			BlobContainerClient blobContainerClient = getBlobContainerClient(connectionNameKey, containerName);
 			Iterable<BlobItem> listBlobs = blobContainerClient.listBlobsByHierarchy(sourceDirectory);
 			CloudBlobDirectory transitDirectory = getDirectoryName(container, OUTPUT_DIRECTORY, PRINT_DIRECTORY);
 			int count = 0;
+			BlobClient pdfSrcBlobClient = null;
+			BlobClient xmlSrcBlobClient = null;
 			for (BlobItem blobItem : listBlobs) {
 				String fileName = getFileName(blobItem.getName());
 				fileName = findActualFileName(fileName);
-				logger.info("process file list:" + fileName);
-
 				CloudBlockBlob intialFileDownload = transitDirectory.getBlockBlobReference(fileName);
 				intialFileDownload.downloadToFile(fileName);
 				count++;
@@ -290,58 +287,67 @@ public class PostProcessingScheduler {
 				BlobClient dstBlobClient = blobContainerClient.getBlobClient(targetDirectory + fileName);
 				BlobClient srcBlobClient = blobContainerClient.getBlobClient(blobItem.getName());
 				String updateSrcUrl = srcBlobClient.getBlobUrl();
+
 				if (srcBlobClient.getBlobUrl().contains(BACKSLASH_ASCII)) {
 					updateSrcUrl = srcBlobClient.getBlobUrl().replace(BACKSLASH_ASCII, FILE_SEPARATION);
 				}
 				String fileExtenstion = FilenameUtils.getExtension(fileName);
-				ConcurrentHashMap<String, String> invalidCheckMap = new ConcurrentHashMap<>();
-				invalidCheckMap.put(fileExtenstion, fileName);
-				if ("pdf".equals(fileExtenstion)) {
-					invalidCheckMap.put("pdf", fileName);
-				} else if ("xml".equals(fileExtenstion)) {
-					invalidCheckMap.put("xml", fileName);
-				}
 				if (fileName.contains(archiveOnly)) {
-					boolean invalidFile = invalidXmlFileValidation(invalidCheckMap, currentDate, currentDateTime);
-					if (invalidFile) {
-						String moveXmlFileName = ccRecipeintTypeMap.get("xml");
-						String transitTargetDirectory = OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/" + currentDate + "-"
-								+ PROCESS_DIRECTORY + "/" + currentDateTime + FAILED_SUB_DIRECTORY + "/";
-						copyFileToTargetDirectory(moveXmlFileName, "", transitTargetDirectory);
-						String movePDFFileName = ccRecipeintTypeMap.get("pdf");
-						copyFileToTargetDirectory(movePDFFileName, "", transitTargetDirectory);
-					} else {
-						String xmlFile = ccRecipeintTypeMap.get("xml");
-						File archiveOnlyXmlFile = new File(xmlFile);
-						archiveOnly(archiveOnlyXmlFile, true, currentDate, currentDateTime, true);
-						String pdfFile = ccRecipeintTypeMap.get("pdf");
-						File archiveOnlyPDFFile = new File(pdfFile);
-						archiveOnly(archiveOnlyPDFFile, true, currentDate, currentDateTime, true);
+					invalidCheckMap.put(fileExtenstion, fileName);
+					if ("pdf".equals(fileExtenstion)) {
+						invalidCheckMap.put("pdf", fileName);
+						pdfSrcBlobClient = srcBlobClient;
+					} else if ("xml".equals(fileExtenstion)) {
+						invalidCheckMap.put("xml", fileName);
+						xmlSrcBlobClient = srcBlobClient;
+					}
+					if (invalidCheckMap.size() == 2) {
+						boolean invalidFile = invalidXmlFileValidation(invalidCheckMap, currentDate, currentDateTime);
+						if (!invalidFile) {
+							String xmlFile = invalidCheckMap.get("xml");
+							File archiveOnlyXmlFile = new File(xmlFile);
+							archiveOnly(archiveOnlyXmlFile, true, currentDate, currentDateTime, true);
+							String pdfFile = invalidCheckMap.get("pdf");
+							File archiveOnlyPDFFile = new File(pdfFile);
+							archiveOnly(archiveOnlyPDFFile, true, currentDate, currentDateTime, true);
+							new File(xmlFile).delete();
+							new File(pdfFile).delete();
+							srcBlobClient.delete();
+						}
+						invalidCheckMap.clear();
+						pdfSrcBlobClient.delete();
+						xmlSrcBlobClient.delete();
+						archiveMap.put("archive", "true");
+					}
+				} else if (fileName.contains(printArchive) && !(fileName.contains(ccRecipeintType))) {
+					
+					invalidCheckMap.put(fileExtenstion, fileName);
+					if ("pdf".equals(fileExtenstion)) {
+						invalidCheckMap.put("pdf", fileName);
+						pdfSrcBlobClient = srcBlobClient;
+					} else if ("xml".equals(fileExtenstion)) {
+						invalidCheckMap.put("xml", fileName);
+						xmlSrcBlobClient = srcBlobClient;
+					}
+					if (invalidCheckMap.size() == 2) {
+						boolean invalidFile = invalidXmlFileValidation(invalidCheckMap, currentDate, currentDateTime);
+						if (!invalidFile) {
+							dstBlobClient.beginCopy(updateSrcUrl, null);
+							File printArchiveFile = new File(fileName);
+							removeArchiveTotalSheetFileElement(printArchiveFile, true, currentDate, currentDateTime,
+									false);
+							archiveMap.put("nonarchive", "true");
+							fileList.add(fileName);
+
+						}
+						pdfSrcBlobClient.delete();
+						xmlSrcBlobClient.delete();
 					}
 					invalidCheckMap.clear();
-					srcBlobClient.delete();
-					archiveMap.put("archive", "true");
-				} else if (fileName.contains(printArchive) && !(fileName.contains(ccRecipeintType))) {
-					boolean invalidFile = invalidXmlFileValidation(invalidCheckMap, currentDate, currentDateTime);
-					if (invalidFile) {
-						String moveXmlFileName = ccRecipeintTypeMap.get("xml");
-						String transitTargetDirectory = OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/" + currentDate + "-"
-								+ PROCESS_DIRECTORY + "/" + currentDateTime + FAILED_SUB_DIRECTORY + "/";
-						copyFileToTargetDirectory(moveXmlFileName, "", transitTargetDirectory);
-						String movePDFFileName = ccRecipeintTypeMap.get("pdf");
-						copyFileToTargetDirectory(movePDFFileName, "", transitTargetDirectory);
-					} else {
-						dstBlobClient.beginCopy(updateSrcUrl, null);
-						File printArchiveFile = new File(fileName);
-						removeArchiveTotalSheetFileElement(printArchiveFile, true, currentDate, currentDateTime, true);
-						archiveMap.put("nonarchive", "true");
-						fileList.add(fileName);
-						srcBlobClient.delete();
-					}
 
 				} else if (fileName.contains(ccRecipeintType)) {
-					boolean recipeintDigitalCheck = validateCCRecientFileType(fileName);
-					if (!(recipeintDigitalCheck)) {
+					boolean recipientDigitCheck = validateCCRecientFileType(fileName);
+					if (!(recipientDigitCheck)) {
 						logger.info("CC number is not present for processing: " + fileName);
 						String transitTargetDirectory = OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/" + currentDate + "-"
 								+ PROCESS_DIRECTORY + "/" + currentDateTime + FAILED_SUB_DIRECTORY + "/";
@@ -353,9 +359,9 @@ public class PostProcessingScheduler {
 
 					String extenstion = FilenameUtils.getExtension(fileName);
 					if ("pdf".equals(extenstion)) {
-						ccRecipeintTypeMap.put("pdf", fileName);
+						ccRecipientTypeMap.put("pdf", fileName);
 					} else if ("xml".equals(extenstion)) {
-						ccRecipeintTypeMap.put("xml", fileName);
+						ccRecipientTypeMap.put("xml", fileName);
 					}
 
 					fileName = FilenameUtils.removeExtension(fileName);
@@ -367,24 +373,24 @@ public class PostProcessingScheduler {
 							ccNumber = Integer.parseInt(fileNameSplit[fileNameSplit.length - 1]);
 						}
 
-						if (ccRecipeintTypeMap.size() == 2) {
-							String xmlFileValidation = ccRecipeintTypeMap.get("xml");
-							boolean validateCCRecientXml = validateCCRecientXmlInputFile(xmlFileValidation);
+						if (ccRecipientTypeMap.size() == 2) {
+							String xmlFileValidation = ccRecipientTypeMap.get("xml");
+							boolean validateCCRecientXml = validateXmlInputFile(xmlFileValidation);
 							if (validateCCRecientXml) {
-								String moveXmlFileName = ccRecipeintTypeMap.get("xml");
+								String moveXmlFileName = ccRecipientTypeMap.get("xml");
 								String transitTargetDirectory = OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/" + currentDate
 										+ "-" + PROCESS_DIRECTORY + "/" + currentDateTime + FAILED_SUB_DIRECTORY + "/";
 								copyFileToTargetDirectory(moveXmlFileName, "", transitTargetDirectory);
-								String movePDFFileName = ccRecipeintTypeMap.get("pdf");
+								String movePDFFileName = ccRecipientTypeMap.get("pdf");
 								copyFileToTargetDirectory(movePDFFileName, "", transitTargetDirectory);
 							} else {
 								primaryRecipeintOperation(ccRecipeintFileTypeLIst, ccNumber, currentDate,
 										currentDateTime);
 							}
-							ccRecipeintTypeMap.clear();
+							ccRecipientTypeMap.clear();
 							ccRecipeintFileTypeLIst.clear();
 							deleteFiles(fileList);
-							fileList.clear();
+							//fileList.clear();
 						}
 					}
 					srcBlobClient.delete();
@@ -396,25 +402,24 @@ public class PostProcessingScheduler {
 		} catch (Exception exception) {
 			logger.info("Exception moveFileToTargetDirectory() :" + exception.getMessage());
 		}
+
 		return archiveMap;
 	}
 
 	public boolean invalidXmlFileValidation(ConcurrentHashMap<String, String> map, String currentDate,
 			String currentDateTime) {
-		boolean validateCCRecientXml = false;
-		if (map.size() == 2) {
-			String xmlFileValidation = map.get("xml");
-			validateCCRecientXml = validateCCRecientXmlInputFile(xmlFileValidation);
-			if (validateCCRecientXml) {
-				String moveXmlFileName = map.get("xml");
-				String transitTargetDirectory = OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/" + currentDate + "-"
-						+ PROCESS_DIRECTORY + "/" + currentDateTime + FAILED_SUB_DIRECTORY + "/";
-				copyFileToTargetDirectory(moveXmlFileName, "", transitTargetDirectory);
-				String movePDFFileName = map.get("pdf");
-				copyFileToTargetDirectory(movePDFFileName, "", transitTargetDirectory);
-			}
+		boolean validateXmlFileCheck = false;
+		String xmlFileValidation = map.get("xml");
+		validateXmlFileCheck = validateXmlInputFile(xmlFileValidation);
+		if (validateXmlFileCheck) {
+			String moveXmlFileName = map.get("xml");
+			String transitTargetDirectory = OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/" + currentDate + "-"
+					+ PROCESS_DIRECTORY + "/" + currentDateTime + FAILED_SUB_DIRECTORY + "/";
+			copyFileToTargetDirectory(moveXmlFileName, "", transitTargetDirectory);
+			String movePDFFileName = map.get("pdf");
+			copyFileToTargetDirectory(movePDFFileName, "", transitTargetDirectory);
 		}
-		return validateCCRecientXml;
+		return validateXmlFileCheck;
 	}
 
 	public String processMetaDataInputFile(CloudBlobDirectory transitDirectory, String currentDateTime,
@@ -495,7 +500,6 @@ public class PostProcessingScheduler {
 				} else {
 					logger.info("unable to process:invalid document type");
 				}
-				logger.info("test file delete for not");
 			}
 			if (postProcessMap.size() > 0) {
 				statusMessage = mergePDF(postProcessMap, currentDateTime, currentDate);
@@ -560,7 +564,6 @@ public class PostProcessingScheduler {
 		CloudBlobContainer container = containerinfo();
 		ConcurrentHashMap<String, List<String>> updatePostProcessMap = new ConcurrentHashMap<>();
 		MemoryUsageSetting memoryUsageSetting = MemoryUsageSetting.setupMainMemoryOnly(memorySize);
-		int count = 0;
 		for (String fileType : postProcessMap.keySet()) {
 			try {
 				List<String> claimNbrSortedList = new LinkedList<>();
@@ -579,8 +582,6 @@ public class PostProcessingScheduler {
 					for (String fileName : fileNameList) {
 						File file = new File(fileName);
 						logger.info("process file for pcl is:" + fileName);
-						count++;
-						logger.info("file colunt for pcl generate:" + count);
 						CloudBlockBlob blob = transitDirectory.getBlockBlobReference(fileName);
 						blob.downloadToFile(file.getAbsolutePath());
 						String claimNbr = fileName.substring(14, fileName.length());
@@ -603,7 +604,7 @@ public class PostProcessingScheduler {
 					statusMessage = convertPDFToPCL(mergePdfFile, container);
 					updatePostProcessMap.put(fileType, fileNameList);
 					bannerFile.delete();
-					// new File(mergePdfFile).delete();
+					new File(mergePdfFile).delete();
 					new File(blankPage).delete();
 					deleteFiles(claimNbrSortedList);
 					deleteFiles(fileNameList);
@@ -636,7 +637,6 @@ public class PostProcessingScheduler {
 				logger.info("Exception mergePDF()" + exception.getMessage());
 			}
 		}
-		logger.info("total number of files for pcl generate:" + count);
 
 		if (postProcessMap.size() > 0) {
 			emailUtility.emailProcess(pclFileList, currentDate,
@@ -909,6 +909,11 @@ public class PostProcessingScheduler {
 				}
 				updatedFile = updatePDFFile.toString();
 			} else if (PostProcessingConstant.XML_TYPE.equals(FilenameUtils.getExtension(file.toString()))) {
+
+				/*
+				 * String[] splitFileName = file.toString().split("_"); STring updatePDFFile =
+				 * splitFileName[splitFileName.length - 1];
+				 */
 				Document document = xmlFileDocumentReader(file.toString());
 				if (Objects.isNull(document)) {
 					logger.info("error in read xml processing file ");
@@ -1036,6 +1041,12 @@ public class PostProcessingScheduler {
 				if (PostProcessingConstant.PDF_TYPE.equals(FilenameUtils.getExtension(fileName))) {
 					splitCCRecipeintPDFFile(file, ccNumberCount, currentDate, currentDateTime);
 				} else if (PostProcessingConstant.XML_TYPE.equals(FilenameUtils.getExtension(fileName))) {
+					File copyOriginalFile = new File("copyoriginal_" + fileName);
+					if (!(copyOriginalFile.exists())) {
+						Files.copy(file.toPath(), copyOriginalFile.toPath());
+					}
+					removeArchiveTotalSheetFileElement(copyOriginalFile, false, currentDate, currentDateTime, false);
+
 					Document document = xmlFileDocumentReader(fileName);
 					if (Objects.isNull(document)) {
 						logger.info("error in read xml processing file");
@@ -1077,8 +1088,6 @@ public class PostProcessingScheduler {
 
 					copyFileToTargetDirectory(updateXmlFile.toString(), OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/",
 							currentDate + "-" + PROCESS_DIRECTORY + "/" + currentDateTime + "-" + PRINT_DIRECTORY);
-
-					removeArchiveTotalSheetFileElement(updateXmlFile, false, currentDate, currentDateTime, false);
 
 					String dcnClaimNbr = findPrimaryFileName(updateXmlFile.toString(), "_");
 					File dcnClainNbrFileName = new File(dcnClaimNbr + XML_EXTENSION);
@@ -1198,7 +1207,7 @@ public class PostProcessingScheduler {
 		return document;
 	}
 
-	public boolean validateCCRecientXmlInputFile(String fileName) {
+	public boolean validateXmlInputFile(String fileName) {
 		boolean validXmlFile = false;
 		try {
 			File file = new File(fileName);
@@ -1216,7 +1225,7 @@ public class PostProcessingScheduler {
 			Node totalSheetTagList = document.getElementsByTagName(totalSheetTag).item(0);
 			Node dcnNbr = document.getElementsByTagName("DCN").item(0);
 			if (Objects.isNull(numberOfPagesList) || Objects.isNull(totalSheetTagList) || Objects.isNull(dcnNbr)) {
-				logger.info("invalid xml input file");
+				logger.info("invalid xml input file : missing Document,totalSheet and DCN tag:" + fileName);
 				validXmlFile = true;
 			}
 		} catch (Exception exception) {
