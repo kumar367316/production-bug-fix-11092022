@@ -214,11 +214,10 @@ public class PostProcessingScheduler {
 			if (archiveMap.size() == 0) {
 				statusMessage = "no file for postprocessing";
 			}
-			//deleteFiles(fileList);
 
-			File prcoessComplete = processCompleteFile();
-			copyFileToTargetDirectory(prcoessComplete.toString(), OUTPUT_DIRECTORY + TRANSIT_DIRECTORY, currentDate);
-			prcoessComplete.delete();
+			File processComplete = processCompleteFile();
+			copyFileToTargetDirectory(processComplete.toString(), OUTPUT_DIRECTORY + TRANSIT_DIRECTORY, currentDate);
+			processComplete.delete();
 
 			String logFile = LOG_FILE;
 			File logFileName = new File(logFile + ".log");
@@ -274,7 +273,6 @@ public class PostProcessingScheduler {
 			BlobContainerClient blobContainerClient = getBlobContainerClient(connectionNameKey, containerName);
 			Iterable<BlobItem> listBlobs = blobContainerClient.listBlobsByHierarchy(sourceDirectory);
 			CloudBlobDirectory transitDirectory = getDirectoryName(container, OUTPUT_DIRECTORY, PRINT_DIRECTORY);
-			int count = 0;
 			BlobClient pdfSrcBlobClient = null;
 			BlobClient xmlSrcBlobClient = null;
 			for (BlobItem blobItem : listBlobs) {
@@ -282,7 +280,6 @@ public class PostProcessingScheduler {
 				fileName = findActualFileName(fileName);
 				CloudBlockBlob intialFileDownload = transitDirectory.getBlockBlobReference(fileName);
 				intialFileDownload.downloadToFile(fileName);
-				count++;
 
 				BlobClient dstBlobClient = blobContainerClient.getBlobClient(targetDirectory + fileName);
 				BlobClient srcBlobClient = blobContainerClient.getBlobClient(blobItem.getName());
@@ -312,16 +309,15 @@ public class PostProcessingScheduler {
 							archiveOnly(archiveOnlyPDFFile, true, currentDate, currentDateTime, true);
 							new File(xmlFile).delete();
 							new File(pdfFile).delete();
-							srcBlobClient.delete();
+							//srcBlobClient.delete();
 						}
 						invalidCheckMap.clear();
 						pdfSrcBlobClient.delete();
-						xmlSrcBlobClient.delete();
+						srcBlobClient.delete();
 						archiveMap.put("archive", "true");
 					}
 				} else if (fileName.contains(printArchive) && !(fileName.contains(ccRecipeintType))) {
-					
-					invalidCheckMap.put(fileExtenstion, fileName);
+					dstBlobClient.beginCopy(updateSrcUrl, null);
 					if ("pdf".equals(fileExtenstion)) {
 						invalidCheckMap.put("pdf", fileName);
 						pdfSrcBlobClient = srcBlobClient;
@@ -332,18 +328,34 @@ public class PostProcessingScheduler {
 					if (invalidCheckMap.size() == 2) {
 						boolean invalidFile = invalidXmlFileValidation(invalidCheckMap, currentDate, currentDateTime);
 						if (!invalidFile) {
-							dstBlobClient.beginCopy(updateSrcUrl, null);
-							File printArchiveFile = new File(fileName);
-							removeArchiveTotalSheetFileElement(printArchiveFile, true, currentDate, currentDateTime,
-									false);
+							//dstBlobClient.beginCopy(updateSrcUrl, null);
+							String pdfFile = invalidCheckMap.get("pdf");
+							File pdfFileName = new File(pdfFile);
+							File pdfCopyFile = new File("copy_" + pdfFile.toString());
+							if (!(pdfCopyFile.exists())) {
+								Files.copy(pdfFileName.toPath(), pdfCopyFile.toPath());
+							}
+							removePrintArchiveTotalSheetFileElement(pdfCopyFile, true, currentDate, currentDateTime,
+									true);
+							
+							String xmlFile = invalidCheckMap.get("xml");
+							File xmlFileName = new File(xmlFile);
+							File xmlCopyFile = new File("copy_" + xmlFileName.toString());
+							if (!(xmlCopyFile.exists())) {
+								Files.copy(xmlFileName.toPath(), xmlCopyFile.toPath());
+							}
+							removePrintArchiveTotalSheetFileElement(xmlCopyFile, true, currentDate, currentDateTime,
+									true);
+							
 							archiveMap.put("nonarchive", "true");
 							fileList.add(fileName);
-
+							fileList.add(pdfCopyFile.toString());
+							fileList.add(xmlCopyFile.toString());
+							invalidCheckMap.clear();
 						}
 						pdfSrcBlobClient.delete();
 						xmlSrcBlobClient.delete();
 					}
-					invalidCheckMap.clear();
 
 				} else if (fileName.contains(ccRecipeintType)) {
 					boolean recipientDigitCheck = validateCCRecientFileType(fileName);
@@ -398,7 +410,6 @@ public class PostProcessingScheduler {
 				}
 			}
 
-			logger.info("total number of files for processing:" + count);
 		} catch (Exception exception) {
 			logger.info("Exception moveFileToTargetDirectory() :" + exception.getMessage());
 		}
@@ -914,6 +925,75 @@ public class PostProcessingScheduler {
 				 * String[] splitFileName = file.toString().split("_"); STring updatePDFFile =
 				 * splitFileName[splitFileName.length - 1];
 				 */
+				Document document = xmlFileDocumentReader(file.toString());
+				if (Objects.isNull(document)) {
+					logger.info("error in read xml processing file ");
+				}
+
+				document.getDocumentElement().normalize();
+				Element root = document.getDocumentElement();
+				String claimNumber = file.toString();
+
+				final Node node = document.getElementsByTagName(documentTag).item(0);
+				final NodeList nodeList = node.getChildNodes();
+				for (int i = 0; i < nodeList.getLength(); i++) {
+					final Node documentNode = nodeList.item(i);
+					if (documentNode.getNodeName().equals(totalSheetTag)) {
+						node.removeChild(documentNode);
+					}
+					if (documentNode.getNodeName().equals(fileNameTag)) {
+						claimNumber = root.getElementsByTagName(fileNameTag).item(0).getTextContent();
+					}
+				}
+				document.normalize();
+				TransformerFactory transferFactory = TransformerFactory.newInstance();
+				Transformer transformerReference = transferFactory.newTransformer();
+				transformerReference.setOutputProperty(OutputKeys.INDENT, "yes");
+
+				File updateXMLFile = new File(claimNumber + ".xml");
+
+				final DOMSource source = new DOMSource(document);
+				final StreamResult streamResult = new StreamResult(file);
+				transformerReference.transform(source, streamResult);
+				file.renameTo(updateXMLFile);
+				copyFileToTargetDirectory(updateXMLFile.toString(), OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/",
+						currentDate + "-" + PROCESS_DIRECTORY + "/" + currentDateTime + "-" + ARCHIVE_DIRECTORY);
+
+				if (fileDelete) {
+					updateXMLFile.delete();
+				}
+				updatedFile = updateXMLFile.toString();
+			}
+
+		} catch (TransformerException fileTransferException) {
+			logger.info("Exception archiveFileRemoveElement() " + fileTransferException.getMessage());
+		} catch (Exception exception) {
+			logger.info("Exception archiveFileRemoveElement() " + exception.getMessage());
+		}
+		return updatedFile;
+	}
+	
+	
+	public String removePrintArchiveTotalSheetFileElement(File file, boolean renameFile, String currentDate,
+			String currentDateTime, boolean fileDelete) {
+		String updatedFile = "";
+		try {
+			if (PostProcessingConstant.PDF_TYPE.equals(FilenameUtils.getExtension(file.toString()))) {
+				String[] splitFileName = file.toString().split("_");
+				File updatePDFFile = new File(splitFileName[1]+".pdf");
+				if (!(updatePDFFile.exists())) {
+					Files.copy(file.toPath(), updatePDFFile.toPath());
+				}
+				
+				copyFileToTargetDirectory(updatePDFFile.toString(), OUTPUT_DIRECTORY + TRANSIT_DIRECTORY + "/",
+						currentDate + "-" + PROCESS_DIRECTORY + "/" + currentDateTime + "-" + ARCHIVE_DIRECTORY);
+
+				if (fileDelete) {
+					updatePDFFile.delete();
+				}
+				updatedFile = updatePDFFile.toString();
+			} else if (PostProcessingConstant.XML_TYPE.equals(FilenameUtils.getExtension(file.toString()))) {
+
 				Document document = xmlFileDocumentReader(file.toString());
 				if (Objects.isNull(document)) {
 					logger.info("error in read xml processing file ");
